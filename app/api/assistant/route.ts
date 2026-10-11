@@ -179,8 +179,17 @@ function isHealthEducationQuery(query: string): boolean {
     "antihistamine", "painkiller", "otc", "hydration", "medicine storage", "expired medicine",
   ];
   const hasTopic = topics.some((topic) => q.includes(topic));
+  if (!hasTopic || isTreatmentRequest(query)) return false;
   const educationLead = /^(what is|what are|what's|define|explain|meaning of|what causes|causes of|symptoms of|why do|how does|tell me about|can you explain|what should i know about)\b/.test(q);
-  return hasTopic && educationLead && !isTreatmentRequest(query);
+  if (educationLead) return true;
+  // "fever" and "fever in a child" are symptom questions even without
+  // "what is". They must not be captured by brands such as Fever-X unless
+  // the user also names a strength, dosage form, or extra brand word.
+  const tokens = q.split(" ").filter(Boolean);
+  const dosageForms = new Set(["tablet", "tablets", "tab", "tabs", "capsule", "capsules", "syrup", "suspension", "injection", "solution", "drops", "cream", "ointment", "gel", "spray", "powder"]);
+  if (tokens.some((token) => /^\d/.test(token) || dosageForms.has(token))) return false;
+  const fillers = new Set(["a", "an", "the", "is", "are", "of", "in", "on", "for", "with", "and", "or", "my", "me", "i", "to", "about", "please", "child", "children", "baby", "infant", "kid", "kids", "adult", "mild", "high", "low", "severe", "bad", "little"]);
+  return tokens.every((token) => topics.includes(token) || fillers.has(token));
 }
 
 function healthEducationReply(query: string): string {

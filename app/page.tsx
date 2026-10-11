@@ -60,6 +60,8 @@ const CONVERSATIONAL_WORDS = new Set([
   "information", "mention", "asking", "ask", "want", "need", "looking",
   "something", "anything", "some", "any", "well", "just", "really",
   "actually", "also", "now", "ok", "okay", "right",
+  "child", "children", "kid", "kids", "baby", "infant", "adult", "person",
+  "people", "someone", "mild", "high", "low", "severe", "bad", "little",
   // medicine chatter that never identifies a specific product
   "medicine", "medicines", "medication", "medications", "drug", "drugs",
   "tablet", "tablets", "pill", "pills", "capsule", "capsules", "syrup",
@@ -177,12 +179,18 @@ function findMedicine(rawQuery: string): Medicine | undefined {
   const byBrand = medicineSearchIndex.filter(
     (entry) => entry.brandSeed !== "" && queryTokens.includes(entry.brandSeed)
   );
-  if (byBrand.length > 0) return preferStrengthMatch(byBrand, queryTokens);
+  // "fever" must not resolve to "Fever-X". Brand-seed matching is only for
+  // queries that are not a bare health topic.
+  if (byBrand.length > 0 && !isBareHealthTopicQuery(rawQuery)) {
+    return preferStrengthMatch(byBrand, queryTokens);
+  }
 
   const byBrandFiltered = medicineSearchIndex.filter(
     (entry) => entry.brandSeed !== "" && filteredTokens.includes(entry.brandSeed)
   );
-  if (byBrandFiltered.length > 0) return preferStrengthMatch(byBrandFiltered, queryTokens);
+  if (byBrandFiltered.length > 0 && !isBareHealthTopicQuery(rawQuery)) {
+    return preferStrengthMatch(byBrandFiltered, queryTokens);
+  }
 
   return undefined;
 }
@@ -262,7 +270,8 @@ function findExplicitMedicineMentions(rawQuery: string): Medicine[] {
   const found = medicineSearchIndex.filter((entry) => {
     if (containsPhrase(tokens, entry.fullName) || containsPhrase(filteredTokens, entry.fullName)) return true;
     return entry.brandSeed !== "" && tokens.includes(entry.brandSeed) &&
-      (!hasStrength || entry.strengths.some((strength) => tokens.includes(strength)));
+      (!hasStrength || entry.strengths.some((strength) => tokens.includes(strength))) &&
+      !isBareHealthTopicQuery(rawQuery);
   });
   return [...new Map(found.map((entry) => [entry.medicine.name, entry.medicine])).values()];
 }
@@ -1095,6 +1104,39 @@ function isPureGeneralHealthDefinitionQuery(rawQuery: string): boolean {
   return educationalLead || symptomLead;
 }
 
+/**
+ * Everyday health words that also appear as the first word of real brand
+ * names (for example "Fever-X"). A query is a symptom question — not a
+ * product lookup — when it mentions one of these topics and does not also
+ * name a strength, dosage form, or extra brand word.
+ */
+const HEALTH_TOPIC_WORDS = new Set([
+  "fever", "headache", "headaches", "migraine", "migraines", "cold", "flu",
+  "influenza", "cough", "allergy", "allergies", "diarrhea", "diarrhoea",
+  "constipation", "nausea", "vomiting", "acidity", "heartburn", "indigestion",
+  "bloating", "toothache", "earache", "rash", "hives", "itching", "dizziness",
+  "dizzy", "fatigue", "tiredness", "insomnia", "dehydration", "hydration",
+  "diabetes", "hypertension", "stroke",
+]);
+
+function isBareHealthTopicQuery(rawQuery: string): boolean {
+  const tokens = normalizeTokens(rawQuery);
+  if (!tokens.some((token) => HEALTH_TOPIC_WORDS.has(token))) return false;
+  if (tokens.some((token) => /^\d/.test(token))) return false;
+  const dosageForms = new Set([
+    "tablet", "tablets", "tab", "tabs", "capsule", "capsules", "syrup",
+    "suspension", "injection", "solution", "drops", "cream", "ointment",
+    "gel", "spray", "powder",
+  ]);
+  if (tokens.some((token) => dosageForms.has(token))) return false;
+  // "fever x" / "fever-x" names a product. A topic word surrounded only by
+  // conversational words ("fever in a child") does not.
+  const productWords = tokens.filter(
+    (token) => !HEALTH_TOPIC_WORDS.has(token) && !CONVERSATIONAL_WORDS.has(token)
+  );
+  return productWords.length === 0;
+}
+
 function getBotReply(
   rawQuery: string,
   contextMedicineName: string | null
@@ -1114,6 +1156,15 @@ function getBotReply(
     const healthReply = getHealthResponse(query);
     if (healthReply !== null) {
       return { reply: healthReply, medicineName: contextMedicineName };
+    }
+  }
+
+  // Route health-topic questions before brand matching. Dataset brands such as
+  // "Fever-X" share their first word with everyday symptoms.
+  if (isBareHealthTopicQuery(query) && !isTreatmentRequest(query)) {
+    const topicReply = getHealthResponse(query);
+    if (topicReply !== null) {
+      return { reply: topicReply, medicineName: contextMedicineName };
     }
   }
 
